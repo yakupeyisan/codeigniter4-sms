@@ -19,7 +19,7 @@ class Sms extends BaseConfig
         'username' => '',
         'password' => '',
         'originator' => '',
-        'url' => 'https://api.mutlucell.com/sms/send',
+        'url' => 'https://smsgw.mutlucell.com/smsgw-ws/sndblkex',
     ];
 
     /**
@@ -39,7 +39,7 @@ class Sms extends BaseConfig
         'username' => '',
         'password' => '',
         'originator' => '',
-        'url' => 'https://api.netgsm.com.tr/sms/send',
+        'url' => 'http://soap.netgsm.com.tr:8080/Sms_webservis/SMS?wsdl/',
     ];
 
     /**

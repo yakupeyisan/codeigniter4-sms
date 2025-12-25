@@ -49,9 +49,14 @@ class SanalSantralDriver extends BaseDriver
     public function send($to, string $message, array $options = []): array
     {
         try {
-            // Telefon numaralarını formatla
+            // Telefon numaralarını formatla (eski sistem formatı)
             $phones = is_array($to) ? $to : [$to];
-            $formattedPhones = array_map([$this, 'formatPhoneNumber'], $phones);
+            $formattedPhones = array_map(function($phone) {
+                // Eski sistem formatı: substr(str_replace(["(","+","-","(",")"," "],["","","","","",""],$number),-10)
+                $number = str_replace(["(","+","-","(",")"," "], ["","","","","",""], $phone);
+                return substr($number, -10);
+            }, $phones);
+            $number = $formattedPhones[0]; // SanalSantral tek numara alıyor
             
             // Mesajı temizle
             $message = trim($message);
@@ -60,17 +65,53 @@ class SanalSantralDriver extends BaseDriver
                 throw new SmsException("SMS mesajı boş olamaz");
             }
             
-            // SanalSantral API parametreleri
-            $data = [
-                'username' => $this->username,
-                'password' => $this->password,
-                'originator' => $this->originator,
-                'message' => $message,
-                'numbers' => implode(',', $formattedPhones),
-            ];
+            // SanalSantral XML formatı
+            $postData = "<sms>" .
+                "<apikey>" . htmlspecialchars($this->password, ENT_XML1, 'UTF-8') . "</apikey>" .
+                "<header>" . htmlspecialchars($this->username, ENT_XML1, 'UTF-8') . "</header>" .
+                "<type></type>" .
+                "<validity>2880</validity>" .
+                "<message>" .
+                    "<gsm>" .
+                        "<no>" . htmlspecialchars($number, ENT_XML1, 'UTF-8') . "</no>" .
+                    "</gsm>" .
+                    "<msg>" . htmlspecialchars($message, ENT_XML1, 'UTF-8') . "</msg>" .
+                "</message>" .
+                "</sms>";
             
-            // HTTP isteği gönder
-            $response = $this->sendHttpRequest($this->url, $data);
+            // cURL isteği
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $this->url);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+            curl_setopt($ch, CURLOPT_POST, TRUE);
+            curl_setopt($ch, CURLOPT_TIMEOUT, $this->config->timeout);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, Array("Content-Type: text/xml; charset=UTF-8"));
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            
+            if (curl_errno($ch)) {
+                $curlError = curl_error($ch);
+                curl_close($ch);
+                return [
+                    'success' => false,
+                    'message' => "cURL hatası: {$curlError}",
+                    'data' => ['error' => $curlError],
+                ];
+            }
+            
+            curl_close($ch);
+            
+            if ($httpCode !== 200) {
+                return [
+                    'success' => false,
+                    'message' => "HTTP {$httpCode}: {$response}",
+                    'data' => ['http_code' => $httpCode, 'body' => $response],
+                ];
+            }
             
             // Yanıtı parse et
             return $this->parseResponse($response);
@@ -87,50 +128,26 @@ class SanalSantralDriver extends BaseDriver
     /**
      * API yanıtını parse et
      */
-    protected function parseResponse(array $response): array
+    protected function parseResponse(string $response): array
     {
-        $httpCode = $response['http_code'];
-        $body = $response['body'];
+        $response = trim($response);
+        $responseParts = explode(" ", $response);
         
-        if ($httpCode !== 200) {
+        // Eski sistem kontrolü: explode(" ",$response)[0]!="00"
+        if (!isset($responseParts[0]) || $responseParts[0] != "00") {
             return [
                 'success' => false,
-                'message' => "HTTP {$httpCode}: {$body}",
-                'data' => ['http_code' => $httpCode, 'body' => $body],
+                'message' => "Bilinmeyen hata",
+                'data' => ['Result' => "Bilinmeyen hata", 'response' => $response],
             ];
         }
         
-        // SanalSantral genellikle JSON döner
-        $json = json_decode($body, true);
-        if (json_last_error() === JSON_ERROR_NONE) {
-            if (isset($json['status']) && $json['status'] === 'success') {
-                return [
-                    'success' => true,
-                    'message' => 'SMS başarıyla gönderildi',
-                    'data' => $json,
-                ];
-            } else {
-                return [
-                    'success' => false,
-                    'message' => $json['message'] ?? 'SMS gönderilemedi',
-                    'data' => $json,
-                ];
-            }
-        }
-        
-        // Text yanıt
-        if (strpos($body, 'OK') !== false || strpos($body, 'success') !== false) {
-            return [
-                'success' => true,
-                'message' => 'SMS başarıyla gönderildi',
-                'data' => ['body' => $body],
-            ];
-        }
-        
+        // Başarılı
+        $result = isset($responseParts[1]) ? $responseParts[1] : $response;
         return [
-            'success' => false,
-            'message' => 'SMS gönderilemedi: ' . $body,
-            'data' => ['body' => $body],
+            'success' => true,
+            'message' => 'Mesaj gönderildi.',
+            'data' => ['Result' => $result],
         ];
     }
 }

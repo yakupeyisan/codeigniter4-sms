@@ -13,6 +13,16 @@ class MutluCellDriver extends BaseDriver
     protected string $originator;
     protected string $url;
 
+    public static array $errors = [
+        '20' => 'Post edilen xml eksik veya hatalı.',
+        '21' => 'Kullanılan originatöre sahip değilsiniz',
+        '22' => 'Kontörünüz yetersiz',
+        '23' => 'Kullanıcı adı ya da parolanız hatalı.',
+        '24' => 'Şu anda size ait başka bir işlem aktif.',
+        '25' => 'SMSC Stopped (Bu hatayı alırsanız, işlemi 1-2 dk sonra tekrar deneyin)',
+        '30' => 'Hesap Aktivasyonu sağlanmamış'
+    ];
+
     public function __construct(SmsConfig $config)
     {
         parent::__construct($config);
@@ -20,7 +30,7 @@ class MutluCellDriver extends BaseDriver
         $this->username = $this->config->mutlucell['username'];
         $this->password = $this->config->mutlucell['password'];
         $this->originator = $this->config->mutlucell['originator'];
-        $this->url = $this->config->mutlucell['url'];
+        $this->url = $this->config->mutlucell['url'] ?: 'https://smsgw.mutlucell.com/smsgw-ws/sndblkex';
         
         $this->validateConfiguration();
     }
@@ -52,6 +62,7 @@ class MutluCellDriver extends BaseDriver
             // Telefon numaralarını formatla
             $phones = is_array($to) ? $to : [$to];
             $formattedPhones = array_map([$this, 'formatPhoneNumber'], $phones);
+            $number = implode(',', $formattedPhones);
             
             // Mesajı temizle
             $message = trim($message);
@@ -60,20 +71,48 @@ class MutluCellDriver extends BaseDriver
                 throw new SmsException("SMS mesajı boş olamaz");
             }
             
-            // MutluCell API parametreleri
-            $data = [
-                'username' => $this->username,
-                'password' => $this->password,
-                'originator' => $this->originator,
-                'message' => $message,
-                'numbers' => implode(',', $formattedPhones),
-            ];
+            // MutluCell XML formatı
+            $xml_data = '<?xml version="1.0" encoding="UTF-8"?>' .
+                '<smspack ka="' . htmlspecialchars($this->username, ENT_XML1, 'UTF-8') . '" pwd="' . htmlspecialchars($this->password, ENT_XML1, 'UTF-8') . '" org="' . htmlspecialchars($this->originator, ENT_XML1, 'UTF-8') . '" >' .
+                '<mesaj>' .
+                '<metin>' . htmlspecialchars($message, ENT_XML1, 'UTF-8') . '</metin>' .
+                '<nums>' . htmlspecialchars($number, ENT_XML1, 'UTF-8') . '</nums>' .
+                '</mesaj>' .
+                '</smspack>';
             
-            // HTTP isteği gönder
-            $response = $this->sendHttpRequest($this->url, $data);
+            // cURL isteği
+            $ch = curl_init($this->url);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+            curl_setopt($ch, CURLOPT_POST, 1);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: text/xml'));
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $xml_data);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+            curl_setopt($ch, CURLOPT_TIMEOUT, $this->config->timeout);
+            
+            $output = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+            
+            if ($curlError) {
+                return [
+                    'success' => false,
+                    'message' => "cURL hatası: {$curlError}",
+                    'data' => ['error' => $curlError],
+                ];
+            }
+            
+            if ($httpCode !== 200) {
+                return [
+                    'success' => false,
+                    'message' => "HTTP {$httpCode}: {$output}",
+                    'data' => ['http_code' => $httpCode, 'body' => $output],
+                ];
+            }
             
             // Yanıtı parse et
-            return $this->parseResponse($response);
+            return $this->parseResponse($output);
             
         } catch (\Exception $e) {
             return [
@@ -87,54 +126,24 @@ class MutluCellDriver extends BaseDriver
     /**
      * API yanıtını parse et
      */
-    protected function parseResponse(array $response): array
+    protected function parseResponse(string $output): array
     {
-        $httpCode = $response['http_code'];
-        $body = $response['body'];
+        $output = trim($output);
         
-        if ($httpCode !== 200) {
+        // Hata kodları kontrolü
+        if (isset(self::$errors[$output])) {
             return [
                 'success' => false,
-                'message' => "HTTP {$httpCode}: {$body}",
-                'data' => ['http_code' => $httpCode, 'body' => $body],
+                'message' => self::$errors[$output],
+                'data' => ['Result' => self::$errors[$output], 'error_code' => $output],
             ];
         }
         
-        // MutluCell genellikle XML veya JSON döner
-        // Basit bir kontrol yapalım
-        $json = json_decode($body, true);
-        if (json_last_error() === JSON_ERROR_NONE) {
-            // JSON yanıt
-            if (isset($json['status']) && $json['status'] === 'success') {
-                return [
-                    'success' => true,
-                    'message' => 'SMS başarıyla gönderildi',
-                    'data' => $json,
-                ];
-            } else {
-                return [
-                    'success' => false,
-                    'message' => $json['message'] ?? 'SMS gönderilemedi',
-                    'data' => $json,
-                ];
-            }
-        }
-        
-        // XML veya text yanıt
-        // MutluCell'in yanıt formatına göre parse edilebilir
-        // Şimdilik başarılı kabul edelim
-        if (strpos($body, 'OK') !== false || strpos($body, 'success') !== false) {
-            return [
-                'success' => true,
-                'message' => 'SMS başarıyla gönderildi',
-                'data' => ['body' => $body],
-            ];
-        }
-        
+        // Başarılı
         return [
-            'success' => false,
-            'message' => 'SMS gönderilemedi: ' . $body,
-            'data' => ['body' => $body],
+            'success' => true,
+            'message' => 'Mesaj gönderildi.',
+            'data' => ['Result' => $output],
         ];
     }
 }
