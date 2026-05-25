@@ -55,6 +55,45 @@ class NetGsmDriver extends BaseDriver
         if (empty($this->originator)) {
             throw new ConfigurationException("NetGsm originator belirtilmelidir");
         }
+
+        if (filter_var($this->url, FILTER_VALIDATE_URL) === false) {
+            throw new ConfigurationException('NetGsm URL geçersiz: ' . $this->url);
+        }
+    }
+
+    /**
+     * @return array{output: string, httpCode: int, error: string}
+     */
+    private function postSoapRequest(string $soapXml): array
+    {
+        $verifySsl = true;
+        $caBundle = env('CURL_CA_BUNDLE', '');
+        if ($caBundle !== '' && is_file($caBundle)) {
+            $verifySsl = $caBundle;
+        }
+
+        try {
+            $httpResponse = \Config\Services::curlrequest()->post($this->url, [
+                'body' => $soapXml,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'http_errors' => false,
+                'verify' => $verifySsl,
+                'timeout' => $this->config->timeout,
+                'allow_redirects' => ['max' => 10],
+            ]);
+
+            return [
+                'output' => (string) $httpResponse->getBody(),
+                'httpCode' => $httpResponse->getStatusCode(),
+                'error' => '',
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'output' => '',
+                'httpCode' => 0,
+                'error' => $e->getMessage(),
+            ];
+        }
     }
 
     /**
@@ -63,18 +102,7 @@ class NetGsmDriver extends BaseDriver
     public function checkSender(): array
     {
         try {
-            $curl = curl_init();
-
-            curl_setopt_array($curl, array(
-                CURLOPT_URL => $this->url,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_ENCODING => '',
-                CURLOPT_MAXREDIRS => 10,
-                CURLOPT_TIMEOUT => $this->config->timeout,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_CUSTOMREQUEST => 'POST',
-                CURLOPT_POSTFIELDS => '<?xml version="1.0"?>
+            $soapXml = '<?xml version="1.0"?>
                 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"
                             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -85,29 +113,22 @@ class NetGsmDriver extends BaseDriver
                         <header>' . htmlspecialchars($this->originator, ENT_XML1, 'UTF-8') . '</header>
                     </ns3:gondericiadlari>
                     </SOAP-ENV:Body>
-                </SOAP-ENV:Envelope>',
-                CURLOPT_HTTPHEADER => array(
-                    'Content-Type: text/xml'
-                ),
-            ));
+                </SOAP-ENV:Envelope>';
 
-            $response = curl_exec($curl);
-            $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($curl);
-            curl_close($curl);
+            $result = $this->postSoapRequest($soapXml);
 
-            if ($curlError) {
+            if ($result['error'] !== '') {
                 return [
                     'success' => false,
-                    'message' => "cURL hatası: {$curlError}",
-                    'data' => ['error' => $curlError],
+                    'message' => 'HTTP isteği başarısız: ' . $result['error'],
+                    'data' => ['error' => $result['error']],
                 ];
             }
 
             return [
                 'success' => true,
                 'message' => 'Başarılı',
-                'data' => ['Result' => $response],
+                'data' => ['Result' => $result['output']],
             ];
         } catch (\Exception $e) {
             return [
@@ -157,36 +178,18 @@ class NetGsmDriver extends BaseDriver
                 </SOAP-ENV:Body>
             </SOAP-ENV:Envelope>';
             
-            // cURL isteği
-            $curl = curl_init();
-            curl_setopt_array($curl, array(
-                CURLOPT_URL => $this->url,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_ENCODING => '',
-                CURLOPT_MAXREDIRS => 10,
-                CURLOPT_TIMEOUT => $this->config->timeout,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                CURLOPT_CUSTOMREQUEST => 'POST',
-                CURLOPT_POSTFIELDS => $soapXml,
-                CURLOPT_HTTPHEADER => array(
-                    'Content-Type: text/xml'
-                ),
-            ));
-            
-            $output = curl_exec($curl);
-            $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($curl);
-            curl_close($curl);
-            
-            if ($curlError) {
+            $result = $this->postSoapRequest($soapXml);
+            $output = $result['output'];
+            $httpCode = $result['httpCode'];
+
+            if ($result['error'] !== '') {
                 return [
                     'success' => false,
-                    'message' => "cURL hatası: {$curlError}",
-                    'data' => ['error' => $curlError],
+                    'message' => 'HTTP isteği başarısız: ' . $result['error'],
+                    'data' => ['error' => $result['error']],
                 ];
             }
-            
+
             if ($httpCode !== 200) {
                 return [
                     'success' => false,

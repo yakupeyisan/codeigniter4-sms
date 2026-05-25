@@ -34,38 +34,68 @@ abstract class BaseDriver implements DriverInterface
     }
 
     /**
-     * HTTP POST isteği gönder
+     * HTTP POST isteği gönder (CURLRequest; curl_exec değil).
      */
     protected function sendHttpRequest(string $url, array $data, array $headers = []): array
     {
-        $ch = curl_init();
-        
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $this->config->timeout);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        
-        if (!empty($headers)) {
-            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        $url = trim($url);
+        if ($url === '' || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            throw new SmsException('Geçersiz HTTP URL');
         }
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        
-        curl_close($ch);
-        
-        if ($error) {
-            throw new SmsException("HTTP isteği başarısız: {$error}");
+
+        $verifySsl = true;
+        $caBundle = env('CURL_CA_BUNDLE', '');
+        if ($caBundle !== '' && is_file($caBundle)) {
+            $verifySsl = $caBundle;
         }
-        
-        return [
-            'http_code' => $httpCode,
-            'body' => $response,
+
+        $options = [
+            'form_params' => $data,
+            'http_errors' => false,
+            'verify' => $verifySsl,
+            'timeout' => $this->config->timeout,
         ];
+
+        $parsedHeaders = $this->normalizeHttpHeaders($headers);
+        if ($parsedHeaders !== []) {
+            $options['headers'] = $parsedHeaders;
+        }
+
+        try {
+            $httpResponse = \Config\Services::curlrequest()->post($url, $options);
+        } catch (\Throwable $e) {
+            throw new SmsException('HTTP isteği başarısız: ' . $e->getMessage());
+        }
+
+        return [
+            'http_code' => $httpResponse->getStatusCode(),
+            'body' => (string) $httpResponse->getBody(),
+        ];
+    }
+
+    /**
+     * @param list<string> $headers "Name: value" format
+     * @return array<string, string>
+     */
+    private function normalizeHttpHeaders(array $headers): array
+    {
+        $normalized = [];
+        foreach ($headers as $header) {
+            if (! is_string($header)) {
+                continue;
+            }
+            $pos = strpos($header, ':');
+            if ($pos === false) {
+                continue;
+            }
+            $name = trim(substr($header, 0, $pos));
+            $value = trim(substr($header, $pos + 1));
+            if ($name !== '') {
+                $normalized[$name] = $value;
+            }
+        }
+
+        return $normalized;
     }
 
     /**

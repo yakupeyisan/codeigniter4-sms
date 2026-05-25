@@ -51,6 +51,10 @@ class MutluCellDriver extends BaseDriver
         if (empty($this->originator)) {
             throw new ConfigurationException("MutluCell originator belirtilmelidir");
         }
+
+        if (filter_var($this->url, FILTER_VALIDATE_URL) === false) {
+            throw new ConfigurationException('MutluCell URL geçersiz: ' . $this->url);
+        }
     }
 
     /**
@@ -80,26 +84,27 @@ class MutluCellDriver extends BaseDriver
                 '</mesaj>' .
                 '</smspack>';
             
-            // cURL isteği
-            $ch = curl_init($this->url);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
-            curl_setopt($ch, CURLOPT_POST, 1);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: text/xml'));
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $xml_data);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-            curl_setopt($ch, CURLOPT_TIMEOUT, $this->config->timeout);
-            
-            $output = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($ch);
-            curl_close($ch);
-            
-            if ($curlError) {
+            $verifySsl = true;
+            $caBundle = env('CURL_CA_BUNDLE', '');
+            if ($caBundle !== '' && is_file($caBundle)) {
+                $verifySsl = $caBundle;
+            }
+
+            try {
+                $httpResponse = \Config\Services::curlrequest()->post($this->url, [
+                    'body' => $xml_data,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'http_errors' => false,
+                    'verify' => $verifySsl,
+                    'timeout' => $this->config->timeout,
+                ]);
+                $output = (string) $httpResponse->getBody();
+                $httpCode = $httpResponse->getStatusCode();
+            } catch (\Throwable $e) {
                 return [
                     'success' => false,
-                    'message' => "cURL hatası: {$curlError}",
-                    'data' => ['error' => $curlError],
+                    'message' => 'HTTP isteği başarısız: ' . $e->getMessage(),
+                    'data' => ['error' => $e->getMessage()],
                 ];
             }
             

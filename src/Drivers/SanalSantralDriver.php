@@ -41,6 +41,10 @@ class SanalSantralDriver extends BaseDriver
         if (empty($this->originator)) {
             throw new ConfigurationException("SanalSantral originator belirtilmelidir");
         }
+
+        if ($this->url === '' || filter_var($this->url, FILTER_VALIDATE_URL) === false) {
+            throw new ConfigurationException('SanalSantral URL geçersiz: ' . $this->url);
+        }
     }
 
     /**
@@ -79,32 +83,30 @@ class SanalSantralDriver extends BaseDriver
                 "</message>" .
                 "</sms>";
             
-            // cURL isteği
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $this->url);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-            curl_setopt($ch, CURLOPT_POST, TRUE);
-            curl_setopt($ch, CURLOPT_TIMEOUT, $this->config->timeout);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, Array("Content-Type: text/xml; charset=UTF-8"));
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            
-            if (curl_errno($ch)) {
-                $curlError = curl_error($ch);
-                curl_close($ch);
+            $verifySsl = true;
+            $caBundle = env('CURL_CA_BUNDLE', '');
+            if ($caBundle !== '' && is_file($caBundle)) {
+                $verifySsl = $caBundle;
+            }
+
+            try {
+                $httpResponse = \Config\Services::curlrequest()->post($this->url, [
+                    'body' => $postData,
+                    'headers' => ['Content-Type' => 'text/xml; charset=UTF-8'],
+                    'http_errors' => false,
+                    'verify' => $verifySsl,
+                    'timeout' => $this->config->timeout,
+                ]);
+                $response = (string) $httpResponse->getBody();
+                $httpCode = $httpResponse->getStatusCode();
+            } catch (\Throwable $e) {
                 return [
                     'success' => false,
-                    'message' => "cURL hatası: {$curlError}",
-                    'data' => ['error' => $curlError],
+                    'message' => 'HTTP isteği başarısız: ' . $e->getMessage(),
+                    'data' => ['error' => $e->getMessage()],
                 ];
             }
-            
-            curl_close($ch);
-            
+
             if ($httpCode !== 200) {
                 return [
                     'success' => false,
