@@ -84,18 +84,12 @@ class MutluCellDriver extends BaseDriver
                 '</mesaj>' .
                 '</smspack>';
             
-            $verifySsl = true;
-            $caBundle = env('CURL_CA_BUNDLE', '');
-            if ($caBundle !== '' && is_file($caBundle)) {
-                $verifySsl = $caBundle;
-            }
-
             try {
                 $httpResponse = \Config\Services::curlrequest()->post($this->url, [
                     'body' => $xml_data,
                     'headers' => ['Content-Type' => 'text/xml'],
                     'http_errors' => false,
-                    'verify' => $verifySsl,
+                    'verify' => $this->resolveSslVerify(),
                     'timeout' => $this->config->timeout,
                 ]);
                 $output = (string) $httpResponse->getBody();

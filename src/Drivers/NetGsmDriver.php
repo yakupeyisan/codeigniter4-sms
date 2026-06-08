@@ -66,18 +66,12 @@ class NetGsmDriver extends BaseDriver
      */
     private function postSoapRequest(string $soapXml): array
     {
-        $verifySsl = true;
-        $caBundle = env('CURL_CA_BUNDLE', '');
-        if ($caBundle !== '' && is_file($caBundle)) {
-            $verifySsl = $caBundle;
-        }
-
         try {
             $httpResponse = \Config\Services::curlrequest()->post($this->url, [
                 'body' => $soapXml,
                 'headers' => ['Content-Type' => 'text/xml'],
                 'http_errors' => false,
-                'verify' => $verifySsl,
+                'verify' => $this->resolveSslVerify(),
                 'timeout' => $this->config->timeout,
                 'allow_redirects' => ['max' => 10],
             ]);

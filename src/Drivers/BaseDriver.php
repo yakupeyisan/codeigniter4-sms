@@ -34,6 +34,44 @@ abstract class BaseDriver implements DriverInterface
     }
 
     /**
+     * Guzzle/cURL verify seçeneği: false, true veya CA bundle dosya yolu.
+     *
+     * Windows/IIS ortamlarında php.ini curl.cainfo boş olduğunda
+     * "unable to get local issuer certificate" hatasını önlemek için
+     * CURL_CA_BUNDLE, php.ini veya projedeki certs/cacert.pem kullanılır.
+     *
+     * @return bool|string
+     */
+    protected function resolveSslVerify()
+    {
+        $verifySsl = env('SMS_VERIFY_SSL', env('CURL_VERIFY_SSL', true));
+        if ($verifySsl === false || $verifySsl === 'false' || $verifySsl === '0') {
+            return false;
+        }
+
+        $candidates = [
+            env('CURL_CA_BUNDLE', ''),
+            (string) ini_get('curl.cainfo'),
+            (string) ini_get('openssl.cafile'),
+        ];
+
+        if (defined('ROOTPATH')) {
+            $candidates[] = ROOTPATH . 'certs/cacert.pem';
+            $candidates[] = ROOTPATH . 'writable/certs/cacert.pem';
+            $candidates[] = ROOTPATH . 'writable/cacert.pem';
+        }
+
+        foreach ($candidates as $path) {
+            $path = trim((string) $path);
+            if ($path !== '' && is_file($path)) {
+                return $path;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * HTTP POST isteği gönder (CURLRequest; curl_exec değil).
      */
     protected function sendHttpRequest(string $url, array $data, array $headers = []): array
@@ -43,16 +81,10 @@ abstract class BaseDriver implements DriverInterface
             throw new SmsException('Geçersiz HTTP URL');
         }
 
-        $verifySsl = true;
-        $caBundle = env('CURL_CA_BUNDLE', '');
-        if ($caBundle !== '' && is_file($caBundle)) {
-            $verifySsl = $caBundle;
-        }
-
         $options = [
             'form_params' => $data,
             'http_errors' => false,
-            'verify' => $verifySsl,
+            'verify' => $this->resolveSslVerify(),
             'timeout' => $this->config->timeout,
         ];
 

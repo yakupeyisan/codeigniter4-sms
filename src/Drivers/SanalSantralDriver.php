@@ -83,18 +83,12 @@ class SanalSantralDriver extends BaseDriver
                 "</message>" .
                 "</sms>";
             
-            $verifySsl = true;
-            $caBundle = env('CURL_CA_BUNDLE', '');
-            if ($caBundle !== '' && is_file($caBundle)) {
-                $verifySsl = $caBundle;
-            }
-
             try {
                 $httpResponse = \Config\Services::curlrequest()->post($this->url, [
                     'body' => $postData,
                     'headers' => ['Content-Type' => 'text/xml; charset=UTF-8'],
                     'http_errors' => false,
-                    'verify' => $verifySsl,
+                    'verify' => $this->resolveSslVerify(),
                     'timeout' => $this->config->timeout,
                 ]);
                 $response = (string) $httpResponse->getBody();
