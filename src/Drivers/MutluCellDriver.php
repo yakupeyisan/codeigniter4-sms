@@ -73,58 +73,202 @@ class MutluCellDriver extends BaseDriver
                 throw new SmsException("SMS mesajı boş olamaz");
             }
             
-            $ka = htmlspecialchars($this->username, ENT_XML1, 'UTF-8');
-            $pwd = htmlspecialchars($this->password, ENT_XML1, 'UTF-8');
-            $attrs = 'ka="' . $ka . '" pwd="' . $pwd . '"';
-            if ($this->aboneid !== '') {
-                $attrs .= ' aboneid="' . htmlspecialchars($this->aboneid, ENT_XML1, 'UTF-8') . '"';
-            }
-            if ($this->originator !== '') {
-                $attrs .= ' org="' . htmlspecialchars($this->originator, ENT_XML1, 'UTF-8') . '"';
+            $result = $this->dispatch($number, $message, $this->originator, $this->aboneid);
+            if (($result['data']['error_code'] ?? '') !== '21') {
+                return $result;
             }
 
-            $xml_data = '<?xml version="1.0" encoding="UTF-8"?>' .
-                '<smspack ' . $attrs . '>' .
-                '<mesaj>' .
-                '<metin>' . htmlspecialchars($message, ENT_XML1, 'UTF-8') . '</metin>' .
-                '<nums>' . htmlspecialchars($number, ENT_XML1, 'UTF-8') . '</nums>' .
-                '</mesaj>' .
-                '</smspack>';
-            
-            try {
-                $httpResponse = \Config\Services::curlrequest()->post($this->url, [
-                    'body' => $xml_data,
-                    'headers' => ['Content-Type' => 'text/xml'],
-                    'http_errors' => false,
-                    'verify' => $this->resolveSslVerify(),
-                    'timeout' => $this->config->timeout,
-                ]);
-                $output = (string) $httpResponse->getBody();
-                $httpCode = $httpResponse->getStatusCode();
-            } catch (\Throwable $e) {
-                return [
-                    'success' => false,
-                    'message' => 'HTTP isteği başarısız: ' . $e->getMessage(),
-                    'data' => ['error' => $e->getMessage()],
-                ];
+            // Abone no, başlığı bu hesaba ait olmaktan çıkarır. Aynı başlıkla abonesiz dene.
+            if ($this->aboneid !== '') {
+                $withoutSubscriber = $this->dispatch($number, $message, $this->originator, '');
+                if (($withoutSubscriber['data']['error_code'] ?? '') !== '21') {
+                    return $withoutSubscriber;
+                }
+                $result = $withoutSubscriber;
             }
-            
-            if ($httpCode !== 200) {
-                return [
-                    'success' => false,
-                    'message' => "HTTP {$httpCode}: {$output}",
-                    'data' => ['http_code' => $httpCode, 'body' => $output],
-                ];
+
+            $owned = $this->fetchOwnedOriginators();
+            $picked = $this->pickOwnedOriginator($this->originator, $owned);
+            if ($picked === null || $picked === $this->originator) {
+                return $result;
             }
-            
-            // Yanıtı parse et
-            return $this->parseResponse($output);
+
+            log_message(
+                'error',
+                'MutluCell originatör "' . $this->originator . '" reddedildi; "' . $picked . '" ile yeniden deneniyor.'
+            );
+
+            return $this->dispatch($number, $message, $picked, '');
             
         } catch (\Exception $e) {
             return [
                 'success' => false,
                 'message' => $e->getMessage(),
                 'data' => [],
+            ];
+        }
+    }
+
+    /**
+     * @return array{success:bool,message:string,data:array<string,mixed>}
+     */
+    private function dispatch(string $number, string $message, string $originator, string $aboneid): array
+    {
+        $ka = htmlspecialchars($this->username, ENT_XML1, 'UTF-8');
+        $pwd = htmlspecialchars($this->password, ENT_XML1, 'UTF-8');
+        $attrs = 'ka="' . $ka . '" pwd="' . $pwd . '"';
+        if ($aboneid !== '') {
+            $attrs .= ' aboneid="' . htmlspecialchars($aboneid, ENT_XML1, 'UTF-8') . '"';
+        }
+        if ($originator !== '') {
+            $attrs .= ' org="' . htmlspecialchars($originator, ENT_XML1, 'UTF-8') . '"';
+        }
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>' .
+            '<smspack ' . $attrs . '>' .
+            '<mesaj>' .
+            '<metin>' . htmlspecialchars($message, ENT_XML1, 'UTF-8') . '</metin>' .
+            '<nums>' . htmlspecialchars($number, ENT_XML1, 'UTF-8') . '</nums>' .
+            '</mesaj>' .
+            '</smspack>';
+
+        $posted = $this->postXml($this->url, $xml);
+        if (isset($posted['error'])) {
+            return [
+                'success' => false,
+                'message' => $posted['error'],
+                'data' => ['error' => $posted['error']],
+            ];
+        }
+        if ($posted['httpCode'] !== 200) {
+            return [
+                'success' => false,
+                'message' => 'HTTP ' . $posted['httpCode'] . ': ' . $posted['body'],
+                'data' => ['http_code' => $posted['httpCode'], 'body' => $posted['body']],
+            ];
+        }
+
+        return $this->parseResponse($posted['body']);
+    }
+
+    /**
+     * Hesaba tanımlı gönderen başlıkları. Mutlucell gtorgex.
+     *
+     * @return list<string>
+     */
+    private function fetchOwnedOriginators(): array
+    {
+        $xml = '<?xml version="1.0" encoding="UTF-8"?>'
+            . '<smsorig ka="' . htmlspecialchars($this->username, ENT_XML1, 'UTF-8') . '"'
+            . ' pwd="' . htmlspecialchars($this->password, ENT_XML1, 'UTF-8') . '"/>';
+
+        $posted = $this->postXml($this->originatorListUrl(), $xml);
+        if (isset($posted['error']) || $posted['httpCode'] !== 200) {
+            return [];
+        }
+
+        return $this->parseOriginatorList($posted['body']);
+    }
+
+    private function originatorListUrl(): string
+    {
+        $parts = parse_url($this->url);
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'] ?? 'smsgw.mutlucell.com';
+        if (! str_contains($host, 'mutlucell.com')) {
+            $host = 'smsgw.mutlucell.com';
+            $scheme = 'https';
+        }
+
+        return $scheme . '://' . $host . '/smsgw-ws/gtorgex';
+    }
+
+    /**
+     * @param list<string> $owned
+     */
+    private function pickOwnedOriginator(string $wanted, array $owned): ?string
+    {
+        if ($owned === []) {
+            return null;
+        }
+
+        $wantedKey = $this->originatorKey($wanted);
+        foreach ($owned as $name) {
+            if ($wantedKey !== '' && $this->originatorKey($name) === $wantedKey) {
+                return $name;
+            }
+        }
+
+        return $owned[0];
+    }
+
+    private function originatorKey(string $value): string
+    {
+        $value = trim($value);
+        $value = str_replace(['İ', 'I', 'ı'], ['i', 'i', 'i'], $value);
+
+        return mb_strtolower($value, 'UTF-8');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function parseOriginatorList(string $output): array
+    {
+        $output = trim($output);
+        if ($output === '' || isset(self::$errors[$output])) {
+            return [];
+        }
+
+        $names = [];
+        if (str_contains($output, '<')
+            && preg_match_all('/<(?:originator|org|baslik)>([^<]+)<\/(?:originator|org|baslik)>/i', $output, $matches)) {
+            foreach ($matches[1] as $name) {
+                $name = trim(html_entity_decode($name, ENT_QUOTES | ENT_XML1, 'UTF-8'));
+                if ($name !== '') {
+                    $names[] = $name;
+                }
+            }
+        }
+
+        if ($names === []) {
+            foreach (preg_split('/\r\n|\r|\n/', $output) ?: [] as $line) {
+                $line = trim($line, " \t\n\r\0\x0B#$*");
+                if ($line === '' || isset(self::$errors[$line])) {
+                    continue;
+                }
+                if (preg_match('/^[\p{L}\p{N} ._-]{1,16}$/u', $line) === 1) {
+                    $names[] = $line;
+                }
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    /**
+     * @return array{httpCode:int,body:string,error?:string}
+     */
+    private function postXml(string $url, string $xml): array
+    {
+        try {
+            $httpResponse = \Config\Services::curlrequest()->post($url, [
+                'body' => $xml,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'http_errors' => false,
+                'verify' => $this->resolveSslVerify(),
+                'timeout' => $this->config->timeout,
+            ]);
+
+            return [
+                'httpCode' => $httpResponse->getStatusCode(),
+                'body' => (string) $httpResponse->getBody(),
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'httpCode' => 0,
+                'body' => '',
+                'error' => 'HTTP isteği başarısız: ' . $e->getMessage(),
             ];
         }
     }
