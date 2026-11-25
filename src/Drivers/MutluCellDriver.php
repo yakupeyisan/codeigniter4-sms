@@ -10,6 +10,7 @@ class MutluCellDriver extends BaseDriver
 {
     protected string $username;
     protected string $password;
+    protected string $aboneid;
     protected string $originator;
     protected string $url;
 
@@ -29,6 +30,7 @@ class MutluCellDriver extends BaseDriver
         
         $this->username = $this->config->mutlucell['username'];
         $this->password = $this->config->mutlucell['password'];
+        $this->aboneid = (string) ($this->config->mutlucell['aboneid'] ?? '');
         $this->originator = $this->config->mutlucell['originator'];
         $this->url = $this->config->mutlucell['url'] ?: 'https://smsgw.mutlucell.com/smsgw-ws/sndblkex';
         
@@ -46,10 +48,6 @@ class MutluCellDriver extends BaseDriver
         
         if (empty($this->password)) {
             throw new ConfigurationException("MutluCell password belirtilmelidir");
-        }
-        
-        if (empty($this->originator)) {
-            throw new ConfigurationException("MutluCell originator belirtilmelidir");
         }
 
         if (filter_var($this->url, FILTER_VALIDATE_URL) === false) {
@@ -75,9 +73,18 @@ class MutluCellDriver extends BaseDriver
                 throw new SmsException("SMS mesajı boş olamaz");
             }
             
-            // MutluCell XML formatı
+            $ka = htmlspecialchars($this->username, ENT_XML1, 'UTF-8');
+            $pwd = htmlspecialchars($this->password, ENT_XML1, 'UTF-8');
+            $attrs = 'ka="' . $ka . '" pwd="' . $pwd . '"';
+            if ($this->aboneid !== '') {
+                $attrs .= ' aboneid="' . htmlspecialchars($this->aboneid, ENT_XML1, 'UTF-8') . '"';
+            }
+            if ($this->originator !== '') {
+                $attrs .= ' org="' . htmlspecialchars($this->originator, ENT_XML1, 'UTF-8') . '"';
+            }
+
             $xml_data = '<?xml version="1.0" encoding="UTF-8"?>' .
-                '<smspack ka="' . htmlspecialchars($this->username, ENT_XML1, 'UTF-8') . '" pwd="' . htmlspecialchars($this->password, ENT_XML1, 'UTF-8') . '" org="' . htmlspecialchars($this->originator, ENT_XML1, 'UTF-8') . '" >' .
+                '<smspack ' . $attrs . '>' .
                 '<mesaj>' .
                 '<metin>' . htmlspecialchars($message, ENT_XML1, 'UTF-8') . '</metin>' .
                 '<nums>' . htmlspecialchars($number, ENT_XML1, 'UTF-8') . '</nums>' .

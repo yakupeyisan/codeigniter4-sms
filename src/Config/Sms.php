@@ -18,6 +18,7 @@ class Sms extends BaseConfig
     public array $mutlucell = [
         'username' => '',
         'password' => '',
+        'aboneid' => '',
         'originator' => '',
         'url' => 'https://smsgw.mutlucell.com/smsgw-ws/sndblkex',
     ];
@@ -70,6 +71,7 @@ class Sms extends BaseConfig
         // MutluCell
         $this->mutlucell['username'] = env('SMS_MUTLUCELL_USERNAME', $this->mutlucell['username']);
         $this->mutlucell['password'] = env('SMS_MUTLUCELL_PASSWORD', $this->mutlucell['password']);
+        $this->mutlucell['aboneid'] = env('SMS_MUTLUCELL_ABONENO', $this->mutlucell['aboneid']);
         $this->mutlucell['originator'] = env('SMS_MUTLUCELL_ORIGINATOR', $this->mutlucell['originator']);
         $this->mutlucell['url'] = env('SMS_MUTLUCELL_URL', $this->mutlucell['url']);
 
